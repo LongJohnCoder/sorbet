@@ -962,7 +962,8 @@ ast::ParsedFilesOrCancelled typecheck(unique_ptr<core::GlobalState> &gs, vector<
                             if (result.gotItem()) {
                                 unique_ptr<absl::ReaderMutexLock> lock;
                                 if (preemptionManager) {
-                                    // Prevent this task from being preempted.
+                                    // [IDE] While held, no preemption tasks can run. Auto-released after each turn of
+                                    // the loop.
                                     lock = (*preemptionManager)->lockPreemption();
                                 }
                                 processedByThread++;

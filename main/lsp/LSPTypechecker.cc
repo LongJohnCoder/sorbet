@@ -76,7 +76,11 @@ vector<core::FileRef> LSPTypechecker::restore(UndoState &undoState) {
     indexedFinalGS = std::move(undoState.evictedIndexedFinalGS);
 
     // Clear errors for files that are in the new set of files with errors but not the old set.
+    // If those new files still have errors, they will show up in the next typecheck operation.
     // TODO: Update with the reverse when we switch to tombstoning files.
+    // TODO(jvilk): Shouldn't we just retypecheck the set of both? Is simple and cleaner. Only con is if
+    // fast path has a deep list of things to retypecheck, but can fix by bumping it up to multithreaded
+    // TODO2(jvilk): Number of files typechecked on fast path.
     vector<string> newPathsThatHaveErrors = frefsToPaths(*gs, filesThatHaveErrors);
     vector<string> oldPathsThatHaveErrors = frefsToPaths(*undoState.gs, undoState.evictedFilesThatHaveErrors);
     fast_sort(newPathsThatHaveErrors);
@@ -418,16 +422,17 @@ void LSPTypechecker::pushDiagnostics(u4 epoch, vector<core::FileRef> filesTypech
     for (auto f : this->filesThatHaveErrors) {
         // TODO(jvilk): Overflow warning applies here, too.
         if (filesTypecheckedAsSet.find(f) != filesTypecheckedAsSet.end() && diagnosticEpochs[f.id()] <= epoch) {
-            // We've retypechecked this file, it hasn't been typechecked with newer edits, and it doesn't have errors.
-            // thus, we will update the error list for this file on client to be the empty list.
+            // We've retypechecked this file, it hasn't been typechecked with newer edits, and it might not have errors.
+            // Ensure that we update the error list for this file on client.
             filesToUpdateErrorListFor.push_back(f);
         } else {
             // We either did not retypecheck this file, _or_ it has since been typechecked with newer edits.
-            // We need to remember that it had errors.
+            // We need to remember that it had errors from previous typecheck runs.
             errorFilesInNewRun.push_back(f);
         }
     }
 
+    // The previous loop may have introduced dupes; remove them.
     fast_sort(filesToUpdateErrorListFor);
     filesToUpdateErrorListFor.erase(unique(filesToUpdateErrorListFor.begin(), filesToUpdateErrorListFor.end()),
                                     filesToUpdateErrorListFor.end());
@@ -442,15 +447,7 @@ void LSPTypechecker::pushDiagnostics(u4 epoch, vector<core::FileRef> filesTypech
             continue;
         }
         ENFORCE(diagnosticEpochs[file.id()] <= epoch);
-        string uri;
-        { // uri
-            if (file.data(*gs).sourceType == core::File::Type::Payload) {
-                uri = string(file.data(*gs).path());
-            } else {
-                uri = config->fileRef2Uri(*gs, file);
-            }
-        }
-
+        const string uri = config->fileRef2Uri(*gs, file);
         vector<unique_ptr<Diagnostic>> diagnostics;
         {
             // diagnostics

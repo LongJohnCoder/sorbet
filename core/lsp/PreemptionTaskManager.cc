@@ -46,9 +46,11 @@ bool PreemptionTaskManager::tryRunScheduledPreemptionTask(core::GlobalState &gs)
         auto previousErrorQueue = move(gs.errorQueue);
         gs.errorQueue = make_shared<core::ErrorQueue>(previousErrorQueue->logger, previousErrorQueue->tracer);
         gs.errorQueue->ignoreFlushes = true;
+        // Unset preempt task before running, as running the task will unblock the message processing thread
+        // which may decide to schedule a new task.
+        atomic_store(&this->preemptTask, shared_ptr<lsp::Task>(nullptr));
         preemptTask->run();
         gs.errorQueue = move(previousErrorQueue);
-        atomic_store(&this->preemptTask, shared_ptr<lsp::Task>(nullptr));
         ENFORCE(!epochManager->wasTypecheckingCanceled());
         return true;
     }

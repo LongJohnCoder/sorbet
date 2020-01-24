@@ -363,6 +363,52 @@ TEST_P(ProtocolTest, CanPreemptSlowPathWithFastPathAndBothErrorsAreReported) {
                       });
 }
 
+TEST_P(ProtocolTest, CanCancelSlowPathWithFastPathThatReintroducesOldError) {
+    auto initOptions = make_unique<SorbetInitializationOptions>();
+    initOptions->enableTypecheckInfo = true;
+    assertDiagnostics(initializeLSP(true /* supportsMarkdown */, move(initOptions)), {});
+
+    // foo stands alone
+    assertDiagnostics(send(*openFile("foo.rb", "# typed: true\nclass Foo\nextend T::Sig\nend\n")), {});
+    // bar defines method
+    assertDiagnostics(
+        send(*openFile("bar.rb",
+                       "# typed: true\nclass Bar\nextend T::Sig\nsig{returns(Integer)}\ndef str\n10\nend\nend\n")),
+        {});
+    // baz uses it
+    assertDiagnostics(
+        send(*openFile(
+            "baz.rb",
+            "# typed: true\nclass Baz\nextend T::Sig\nsig{returns(String)}\ndef bar\nBar.new.str\nend\nend\n")),
+        {{"baz.rb", 5, "Returning value that does not conform to method result type"}});
+
+    // Slow path: Introduce syntax error to foo.rb and change method sig in bar.rb to fix error in baz.rb
+    sendAsync(LSPMessage(make_unique<NotificationMessage>("2.0", LSPMethod::PAUSE, nullopt)));
+    sendAsync(*changeFile("foo.rb", "# typed: true\nclass Foo\nextend T::Sig\n", 2, true));
+    sendAsync(*changeFile(
+        "bar.rb", "# typed: true\n\nclass Bar\nextend T::Sig\n\nsig{returns(String)}\ndef str\n'10'\nend\nend\n", 2,
+        true));
+    sendAsync(LSPMessage(make_unique<NotificationMessage>("2.0", LSPMethod::RESUME, nullopt)));
+
+    // Wait for typechecking to begin to avoid races.
+    {
+        auto status = getTypecheckRunStatus(*readAsync());
+        ASSERT_TRUE(status.has_value());
+        ASSERT_EQ(*status, SorbetTypecheckRunStatus::Started);
+    }
+
+    // Fast path: Undo previous changes. Should re-introduce error on baz.rb.
+    sendAsync(LSPMessage(make_unique<NotificationMessage>("2.0", LSPMethod::PAUSE, nullopt)));
+    sendAsync(*changeFile("foo.rb", "# typed: true\nclass Foo\nextend T::Sig\nend\n", 3));
+    sendAsync(*changeFile(
+        "bar.rb", "# typed: true\n\nclass Bar\nextend T::Sig\n\nsig{returns(Integer)}\ndef str\n10\nend\nend\n", 3));
+    sendAsync(LSPMessage(make_unique<NotificationMessage>("2.0", LSPMethod::RESUME, nullopt)));
+
+    // Send a no-op to clear out the pipeline. Should have one error on baz.rb.
+    assertDiagnostics(send(LSPMessage(make_unique<NotificationMessage>("2.0", LSPMethod::SorbetFence, 20))),
+                      {{"baz.rb", 5, "Returning value that does not conform to method result type"}});
+}
+
 // Run these tests in multi-threaded mode.
 INSTANTIATE_TEST_SUITE_P(MultithreadedProtocolTests, ProtocolTest, testing::Values(true));
 
