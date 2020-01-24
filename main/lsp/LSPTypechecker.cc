@@ -51,7 +51,7 @@ void LSPTypechecker::UndoState::recordEvictedState(ast::ParsedFile evictedIndexT
     // Also, ignore updates to new files (id >= size of file table)
     if (id < gs->getFiles().size() && !evictedIndexed.contains(id)) {
         evictedIndexed[id] = move(evictedIndexTree);
-        // gsh should be in-sync with indexed.
+        // file hashes should be kept in-sync with indexed.
         ENFORCE(!evictedFileHashes.contains(id));
         evictedFileHashes[id] = move(evictedFileHash);
     }

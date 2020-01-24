@@ -24,12 +24,26 @@ class TypecheckerTask final : public core::lsp::Task {
     const bool collectCounters;
     absl::Notification complete;
     CounterState counters;
+    unique_ptr<Timer> timeUntilRun;
 
 public:
     TypecheckerTask(unique_ptr<LSPTask> task, unique_ptr<LSPTypecheckerDelegate> delegate, bool collectCounters)
         : task(move(task)), delegate(move(delegate)), collectCounters(collectCounters) {}
 
+    void timeLatencyUntilRun(unique_ptr<Timer> timer) {
+        timeUntilRun = move(timer);
+    }
+
+    void cancelTimeLatencyUntilRun() {
+        if (timeUntilRun != nullptr) {
+            timeUntilRun->cancel();
+            timeUntilRun = nullptr;
+        }
+    }
+
     void run() override {
+        // Destruct timer, if specified. Causes metric to be reported.
+        timeUntilRun = nullptr;
         task->run(*delegate);
         if (collectCounters) {
             counters = getAndClearThreadCounters();
@@ -69,13 +83,21 @@ class SlowPathTypecheckTask : public core::lsp::Task {
     LSPFileUpdates updates;
     WorkerPool &workers;
     absl::Notification startedNotification;
+    unique_ptr<Timer> timeUntilRun;
 
 public:
     SlowPathTypecheckTask(const LSPConfiguration &config, LSPTypechecker &typechecker, LSPFileUpdates updates,
                           WorkerPool &workers)
-        : typechecker(typechecker), updates(move(updates)), workers(workers){};
+        : typechecker(typechecker), updates(move(updates)), workers(workers) {
+        if (updates.canceledSlowPath) {
+            // Measure the time it takes to cancel slow path and run this task
+            timeUntilRun = make_unique<Timer>(*config.logger, "latency.cancel_slow_path");
+        }
+    };
 
     void run() override {
+        // Trigger destructor of Timer, which reports metric.
+        timeUntilRun = nullptr;
         // Inform the epoch manager that we're going to perform a cancelable typecheck, then notify the
         // message processing thread that it's safe to move on.
         typechecker.state().epochManager->startCommitEpoch(updates.epoch);
@@ -133,8 +155,13 @@ void LSPTypecheckerCoordinator::syncRun(unique_ptr<LSPTask> task) {
         move(task), make_unique<LSPTypecheckerDelegate>(canPreempt ? *emptyWorkers : workers, typechecker),
         hasDedicatedThread);
 
-    // If we cannot preempt OR scheduling preemption failed, enqueue the task normally.
-    if (!canPreempt || !preemptionTaskManager->trySchedulePreemptionTask(wrappedTask)) {
+    // Plant this timer before scheduling task to preempt, as task could run before we plant the timer!
+    wrappedTask->timeLatencyUntilRun(make_unique<Timer>(*config->logger, "latency.preempt_slow_path"));
+    if (canPreempt && preemptionTaskManager->trySchedulePreemptionTask(wrappedTask)) {
+        // Preempted; task is guaranteed to run by interrupting the slow path.
+    } else {
+        // Did not preempt, so don't collect a latency metric.
+        wrappedTask->cancelTimeLatencyUntilRun();
         asyncRunInternal(wrappedTask);
     }
 
