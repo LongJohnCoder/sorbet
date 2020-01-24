@@ -873,6 +873,8 @@ void makeLSPTypes(vector<shared_ptr<JSONClassType>> &enumTypes, vector<shared_pt
                                                {
                                                    makeField("uri", JSONString),
                                                    makeField("diagnostics", makeArray(Diagnostic)),
+                                                   makeField("sorbetEpoch", makeOptional(JSONInt)),
+                                                   makeField("sorbetFileEpoch", makeOptional(JSONInt)),
                                                },
                                                classTypes);
 

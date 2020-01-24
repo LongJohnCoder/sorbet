@@ -90,9 +90,10 @@ vector<core::FileRef> LSPTypechecker::restore(UndoState &undoState) {
                         oldPathsThatHaveErrors.end(), std::inserter(clearErrorsFor, clearErrorsFor.begin()));
     for (auto &file : clearErrorsFor) {
         vector<unique_ptr<Diagnostic>> diagnostics;
-        config->output->write(make_unique<LSPMessage>(make_unique<NotificationMessage>(
-            "2.0", LSPMethod::TextDocumentPublishDiagnostics,
-            make_unique<PublishDiagnosticsParams>(config->localName2Remote(file), move(diagnostics)))));
+        auto params = make_unique<PublishDiagnosticsParams>(config->localName2Remote(file), move(diagnostics));
+        params->sorbetFileEpoch = gs->findFileByPath(file).data(*gs).epoch;
+        config->output->write(make_unique<LSPMessage>(
+            make_unique<NotificationMessage>("2.0", LSPMethod::TextDocumentPublishDiagnostics, move(params))));
     }
     filesThatHaveErrors = undoState.evictedFilesThatHaveErrors;
 
@@ -494,9 +495,11 @@ void LSPTypechecker::pushDiagnostics(u4 epoch, vector<core::FileRef> filesTypech
             }
         }
 
+        auto params = make_unique<PublishDiagnosticsParams>(uri, move(diagnostics));
+        params->sorbetEpoch = epoch;
+        params->sorbetFileEpoch = file.data(*gs).epoch;
         config->output->write(make_unique<LSPMessage>(
-            make_unique<NotificationMessage>("2.0", LSPMethod::TextDocumentPublishDiagnostics,
-                                             make_unique<PublishDiagnosticsParams>(uri, move(diagnostics)))));
+            make_unique<NotificationMessage>("2.0", LSPMethod::TextDocumentPublishDiagnostics, move(params))));
     }
 }
 
