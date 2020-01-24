@@ -446,8 +446,8 @@ void LSPTypechecker::pushDiagnostics(u4 epoch, vector<core::FileRef> filesTypech
         ENFORCE(diagnosticEpochs[file.id()] <= epoch);
         ENFORCE(file.data(*gs).epoch <= epoch);
         if (file.data(*gs).epoch > epoch) {
-            config->logger->error("File {} has a newer epoch but we are reporting errors for it.",
-                                  file.data(*gs).path());
+            config->logger->error("File {} has a newer epoch {} > {} but we are reporting errors for it.",
+                                  file.data(*gs).path(), file.data(*gs).epoch, epoch);
         }
         const string uri = config->fileRef2Uri(*gs, file);
         vector<unique_ptr<Diagnostic>> diagnostics;
