@@ -337,15 +337,12 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, WorkerPool &workers, bo
         }
 
         // [Test only] Wait for a preemption if one is expected.
-        if (updates.preemptionsExpected > 0) {
+        while (updates.preemptionsExpected > 0) {
             ENFORCE(preemptManager.has_value());
-            int preemptionsExpected = updates.preemptionsExpected;
-            while (preemptionsExpected > 0) {
-                while (!preemptManager.value()->tryRunScheduledPreemptionTask(*gs)) {
-                    Timer::timedSleep(1ms, *logger, "slow_path.expected_preemption.sleep");
-                }
-                preemptionsExpected--;
+            while (!preemptManager.value()->tryRunScheduledPreemptionTask(*gs)) {
+                Timer::timedSleep(1ms, *logger, "slow_path.expected_preemption.sleep");
             }
+            updates.preemptionsExpected--;
         }
 
         // [Test only] Wait for a cancellation if one is expected.
@@ -449,54 +446,52 @@ void LSPTypechecker::pushDiagnostics(u4 epoch, vector<core::FileRef> filesTypech
         ENFORCE(diagnosticEpochs[file.id()] <= epoch);
         const string uri = config->fileRef2Uri(*gs, file);
         vector<unique_ptr<Diagnostic>> diagnostics;
-        {
-            // diagnostics
-            if (errorsAccumulated.find(file) != errorsAccumulated.end()) {
-                for (auto &e : errorsAccumulated[file]) {
-                    auto range = Range::fromLoc(*gs, e->loc);
-                    if (range == nullptr) {
-                        continue;
-                    }
-                    auto diagnostic = make_unique<Diagnostic>(std::move(range), e->header);
-                    diagnostic->code = e->what.code;
-                    diagnostic->severity = DiagnosticSeverity::Error;
-
-                    typecase(e.get(), [&](core::Error *ce) {
-                        vector<unique_ptr<DiagnosticRelatedInformation>> relatedInformation;
-                        for (auto &section : ce->sections) {
-                            string sectionHeader = section.header;
-
-                            for (auto &errorLine : section.messages) {
-                                string message;
-                                if (errorLine.formattedMessage.length() > 0) {
-                                    message = errorLine.formattedMessage;
-                                } else {
-                                    message = sectionHeader;
-                                }
-                                auto location = config->loc2Location(*gs, errorLine.loc);
-                                if (location == nullptr) {
-                                    continue;
-                                }
-                                relatedInformation.push_back(
-                                    make_unique<DiagnosticRelatedInformation>(std::move(location), message));
-                            }
-                        }
-                        // Add link to error documentation.
-                        relatedInformation.push_back(make_unique<DiagnosticRelatedInformation>(
-                            make_unique<Location>(
-                                absl::StrCat(config->opts.errorUrlBase, e->what.code),
-                                make_unique<Range>(make_unique<Position>(0, 0), make_unique<Position>(0, 0))),
-                            "Click for more information on this error."));
-                        diagnostic->relatedInformation = move(relatedInformation);
-                    });
-                    diagnostics.push_back(move(diagnostic));
+        // diagnostics
+        if (errorsAccumulated.find(file) != errorsAccumulated.end()) {
+            for (auto &e : errorsAccumulated[file]) {
+                auto range = Range::fromLoc(*gs, e->loc);
+                if (range == nullptr) {
+                    continue;
                 }
-            }
+                auto diagnostic = make_unique<Diagnostic>(std::move(range), e->header);
+                diagnostic->code = e->what.code;
+                diagnostic->severity = DiagnosticSeverity::Error;
 
-            config->output->write(make_unique<LSPMessage>(
-                make_unique<NotificationMessage>("2.0", LSPMethod::TextDocumentPublishDiagnostics,
-                                                 make_unique<PublishDiagnosticsParams>(uri, move(diagnostics)))));
+                typecase(e.get(), [&](core::Error *ce) {
+                    vector<unique_ptr<DiagnosticRelatedInformation>> relatedInformation;
+                    for (auto &section : ce->sections) {
+                        string sectionHeader = section.header;
+
+                        for (auto &errorLine : section.messages) {
+                            string message;
+                            if (errorLine.formattedMessage.length() > 0) {
+                                message = errorLine.formattedMessage;
+                            } else {
+                                message = sectionHeader;
+                            }
+                            auto location = config->loc2Location(*gs, errorLine.loc);
+                            if (location == nullptr) {
+                                continue;
+                            }
+                            relatedInformation.push_back(
+                                make_unique<DiagnosticRelatedInformation>(std::move(location), message));
+                        }
+                    }
+                    // Add link to error documentation.
+                    relatedInformation.push_back(make_unique<DiagnosticRelatedInformation>(
+                        make_unique<Location>(
+                            absl::StrCat(config->opts.errorUrlBase, e->what.code),
+                            make_unique<Range>(make_unique<Position>(0, 0), make_unique<Position>(0, 0))),
+                        "Click for more information on this error."));
+                    diagnostic->relatedInformation = move(relatedInformation);
+                });
+                diagnostics.push_back(move(diagnostic));
+            }
         }
+
+        config->output->write(make_unique<LSPMessage>(
+            make_unique<NotificationMessage>("2.0", LSPMethod::TextDocumentPublishDiagnostics,
+                                             make_unique<PublishDiagnosticsParams>(uri, move(diagnostics)))));
     }
 }
 
