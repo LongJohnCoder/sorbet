@@ -62,25 +62,20 @@ LSPTypechecker::LSPTypechecker(std::shared_ptr<const LSPConfiguration> config,
     : typecheckerThreadId(this_thread::get_id()), config(move(config)), preemptManager(move(preemptManager)) {}
 
 vector<core::FileRef> LSPTypechecker::restore(UndoState &undoState) {
-    // Replace indexed trees and file hashes for any files that have been typechecked on the new final GS.
-    for (auto &entry : indexedFinalGS) {
-        // TODO(jvilk): indexedFinalGS contains a bunch of trees that haven't actually been updated, but were
-        // re-typechecked due to changes in other files (e.g. sig updates). We ignore them here, but it would be nice to
-        // amend the fast path to not commit these updates at all.
-        if (undoState.evictedIndexed.contains(entry.first)) {
-            indexed[entry.first] = move(undoState.evictedIndexed[entry.first]);
-            ENFORCE(undoState.evictedFileHashes.contains(entry.first));
-            globalStateHashes[entry.first] = move(undoState.evictedFileHashes[entry.first]);
-        }
+    // Replace evicted index trees and file hashes.
+    for (auto &entry : undoState.evictedIndexed) {
+        indexed[entry.first] = move(entry.second);
+        ENFORCE(undoState.evictedFileHashes.contains(entry.first));
+        globalStateHashes[entry.first] = move(undoState.evictedFileHashes[entry.first]);
     }
     indexedFinalGS = std::move(undoState.evictedIndexedFinalGS);
 
-    // Clear errors for files that are in the new set of files with errors but not the old set.
+    // Restore `filesThatHaveErrors` to its previous state both here, and on the client.
+    // We send empty error lists for files that newly have errors from the canceled slow path.
     // If those new files still have errors, they will show up in the next typecheck operation.
+    // We specifically do this because the old GS might not have the new files introduced in the canceled slow path,
+    // and we expect `gs` to always contain all of the files that previously had errors.
     // TODO: Update with the reverse when we switch to tombstoning files.
-    // TODO(jvilk): Shouldn't we just retypecheck the set of both? Is simple and cleaner. Only con is if
-    // fast path has a deep list of things to retypecheck, but can fix by bumping it up to multithreaded
-    // TODO2(jvilk): Number of files typechecked on fast path.
     vector<string> newPathsThatHaveErrors = frefsToPaths(*gs, filesThatHaveErrors);
     vector<string> oldPathsThatHaveErrors = frefsToPaths(*undoState.gs, undoState.evictedFilesThatHaveErrors);
     fast_sort(newPathsThatHaveErrors);

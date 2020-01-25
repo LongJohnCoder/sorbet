@@ -409,6 +409,53 @@ TEST_P(ProtocolTest, CanCancelSlowPathWithFastPathThatReintroducesOldError) {
                       {{"baz.rb", 5, "Returning value that does not conform to method result type"}});
 }
 
+TEST_P(ProtocolTest, CanCancelSlowPathEvenIfAddsFile) {
+    auto initOptions = make_unique<SorbetInitializationOptions>();
+    initOptions->enableTypecheckInfo = true;
+    assertDiagnostics(initializeLSP(true /* supportsMarkdown */, move(initOptions)), {});
+
+    // bar has no error
+    assertDiagnostics(
+        send(*openFile("bar.rb",
+                       "# typed: true\nclass Bar\nextend T::Sig\nsig{returns(Integer)}\ndef hi\n10\nend\nend\n")),
+        {});
+
+    // Slow path: New file, no error
+    sendAsync(LSPMessage(make_unique<NotificationMessage>("2.0", LSPMethod::PAUSE, nullopt)));
+    sendAsync(*openFile("foo.rb", ""));
+    sendAsync(*changeFile("foo.rb",
+                          "# typed: true\nclass Foo\nextend T::Sig\nsig {returns(Integer)}\ndef foo\n10\nend\nend\n", 2,
+                          true, 1));
+
+    sendAsync(LSPMessage(make_unique<NotificationMessage>("2.0", LSPMethod::RESUME, nullopt)));
+
+    // Wait for typechecking to begin to avoid races.
+    {
+        auto status = getTypecheckRunStatus(*readAsync());
+        ASSERT_TRUE(status.has_value());
+        ASSERT_EQ(*status, SorbetTypecheckRunStatus::Started);
+    }
+
+    // Introduce error fast path: Will preempt.
+    sendAsync(*changeFile(
+        "foo.rb", "# typed: true\nclass Foo\nextend T::Sig\nsig {returns(Integer)}\ndef foo\n'hi'\nend\nend\n", 2));
+
+    // Wait for typechecking to begin to avoid races.
+    {
+        auto status = getTypecheckRunStatus(*readAsync());
+        ASSERT_TRUE(status.has_value());
+        ASSERT_EQ(*status, SorbetTypecheckRunStatus::Started);
+    }
+
+    // Introduce slow path in unrelated file; will cancel.
+    sendAsync(*openFile("bar.rb", "# typed: true\nclass Bar\nextend T::Sig\nsig{returns(Integer)}\ndef hi\n10\nend"));
+
+    // Send fence to clear out the pipeline.
+    assertDiagnostics(
+        send(LSPMessage(make_unique<NotificationMessage>("2.0", LSPMethod::SorbetFence, 20))),
+        {{"foo.rb", 5, "Returning value that does not conform to method result type"}, {"bar.rb", 6, "unexpected"}});
+}
+
 // Run these tests in multi-threaded mode.
 INSTANTIATE_TEST_SUITE_P(MultithreadedProtocolTests, ProtocolTest, testing::Values(true));
 
